@@ -2,7 +2,7 @@
 
 A lightweight HTTP/HTTPS download library and command-line downloader written in C, with resumable downloads, parallel segmented transfers, connection pooling, and transparent gzip/deflate decompression.
 
-[![Build Status](https://github.com/TOTO-sys28/FetC/actions/workflows/build.yml/badge.svg)](https://github.com/YOUR_USERNAME/FetC/actions/workflows/build.yml)
+[![Build Status](https://github.com/TOTO-sys28/FetC/actions/workflows/build.yml/badge.svg)](https://github.com/TOTO-sys28/FetC/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## Why I built this
