@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include "fetc.h"
+#include "transport.h"
 
 static struct timespec start_time;
 
@@ -80,6 +81,8 @@ static void usage(const char *prog)
     printf("Options:\n");
     printf("  --info              Show file info without downloading\n");
     printf("  --segments <N>      Use N parallel segments (default: 4)\n");
+    printf("  --insecure          Disable TLS certificate verification (DANGEROUS!)\n");
+    printf("  -v, --verbose       Enable verbose output\n");
     printf("  -h, --help          Show this help\n");
 }
 
@@ -87,6 +90,8 @@ int main(int argc, char *argv[])
 {
     int info_mode = 0;
     int segments = 0;  /* 0 = single-threaded */
+    int insecure_mode = 0;
+    int verbose_mode = 0;
     const char *url_str = NULL;
 
     for (int i = 1; i < argc; i++) {
@@ -97,6 +102,10 @@ int main(int argc, char *argv[])
                 segments = atoi(argv[++i]);
                 if (segments < 1) segments = 1;
             }
+        } else if (strcmp(argv[i], "--insecure") == 0) {
+            insecure_mode = 1;
+        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+            verbose_mode = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
@@ -108,6 +117,17 @@ int main(int argc, char *argv[])
     if (!url_str) {
         usage(argv[0]);
         return 1;
+    }
+
+    if (insecure_mode) {
+        fprintf(stderr, "WARNING: --insecure mode enabled. TLS certificate verification is DISABLED.\n");
+        fprintf(stderr, "This leaves you vulnerable to man-in-the-middle attacks!\n");
+        transport_set_insecure(1);
+    }
+
+    if (verbose_mode) {
+        transport_set_verbose(1);
+        segmented_set_verbose(1);
     }
 
     URL url;
@@ -143,7 +163,11 @@ int main(int argc, char *argv[])
         sd.on_progress = progress_cb;
 
         if (segmented_download_file(&sd, &url) != 0) {
-            printf("\nDownload failed\n");
+            if (sd.error_message[0]) {
+                printf("\nDownload failed: %s\n", sd.error_message);
+            } else {
+                printf("\nDownload failed\n");
+            }
             return 1;
         }
     } else {
@@ -152,7 +176,11 @@ int main(int argc, char *argv[])
         dl.on_progress = progress_cb;
 
         if (download_file(&dl, &url) != 0) {
-            printf("\nDownload failed\n");
+            if (dl.error_message[0]) {
+                printf("\nDownload failed: %s\n", dl.error_message);
+            } else {
+                printf("\nDownload failed\n");
+            }
             download_destroy(&dl);
             return 1;
         }

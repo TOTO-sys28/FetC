@@ -9,7 +9,7 @@ PKGCONFIGDIR ?= $(LIBDIR)/pkgconfig
 CC          := gcc
 AR          := ar
 CFLAGS      := -Wall -Wextra -O2 -Iinclude
-LDFLAGS     := -lssl -lcrypto -lpthread
+LDFLAGS += -lssl -lcrypto -lpthread -lz
 
 SRCS      := src/url.c src/socket.c src/transport.c src/request.c \
                src/headers.c src/chunked.c src/file.c src/download.c \
