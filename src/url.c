@@ -31,8 +31,10 @@ int url_parse(const char *input, URL *url)
     {
         if (strlen(host_start) >= sizeof(url->host))
             return -1;
-        strcpy(url->host, host_start);
-        strcpy(url->path, "/");
+        strncpy(url->host, host_start, sizeof(url->host) - 1);
+        url->host[sizeof(url->host) - 1] = '\0';
+        strncpy(url->path, "/", sizeof(url->path) - 1);
+        url->path[sizeof(url->path) - 1] = '\0';
         return 0;
     }
 
@@ -46,7 +48,8 @@ int url_parse(const char *input, URL *url)
 
     if (strlen(path_start) >= sizeof(url->path))
         return -1;
-    strcpy(url->path, path_start);
+    strncpy(url->path, path_start, sizeof(url->path) - 1);
+    url->path[sizeof(url->path) - 1] = '\0';
 
     return 0;
 }
