@@ -9,6 +9,18 @@
 #include "socket.h"
 
 static int openssl_initialized = 0;
+static int insecure_mode = 0;
+static int verbose_mode = 0;
+
+void transport_set_insecure(int insecure)
+{
+    insecure_mode = insecure;
+}
+
+void transport_set_verbose(int verbose)
+{
+    verbose_mode = verbose;
+}
 
 static void openssl_init(void)
 {
@@ -30,9 +42,34 @@ int transport_connect(Transport *t, const char *host, int port, int use_ssl)
 {
     memset(t, 0, sizeof(*t));
 
-    t->sockfd = socket_connect(host, port);
+    /* Check for proxy configuration */
+    const char *proxy_env = use_ssl ? "HTTPS_PROXY" : "HTTP_PROXY";
+    if (proxy_parse_env(proxy_env, &t->proxy) == 0) {
+        t->use_proxy = 1;
+    } else {
+        /* Try lowercase version */
+        proxy_env = use_ssl ? "https_proxy" : "http_proxy";
+        if (proxy_parse_env(proxy_env, &t->proxy) == 0) {
+            t->use_proxy = 1;
+        }
+    }
+
+    /* Connect via proxy if configured, otherwise direct */
+    if (t->use_proxy) {
+        if (use_ssl) {
+            /* HTTPS: Use CONNECT tunneling */
+            t->sockfd = socket_connect_proxy(host, port, &t->proxy);
+        } else {
+            /* HTTP: Connect directly to proxy */
+            t->sockfd = socket_connect(t->proxy.host, t->proxy.port);
+        }
+    } else {
+        t->sockfd = socket_connect(host, port);
+    }
+
     if (t->sockfd < 0) {
-        fprintf(stderr, "[transport] TCP connect failed: %s:%d\n", host, port);
+        if (verbose_mode)
+            fprintf(stderr, "[transport] TCP connect failed: %s:%d\n", host, port);
         return -1;
     }
 
@@ -43,35 +80,50 @@ int transport_connect(Transport *t, const char *host, int port, int use_ssl)
 
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) {
-        fprintf(stderr, "[transport] SSL_CTX_new failed:\n");
-        ERR_print_errors_fp(stderr);
+        if (verbose_mode) {
+            fprintf(stderr, "[transport] SSL_CTX_new failed:\n");
+            ERR_print_errors_fp(stderr);
+        }
         goto fail;
     }
 
-    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+    if (insecure_mode) {
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+    } else {
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+        SSL_CTX_set_default_verify_paths(ctx);
+    }
 
     SSL *ssl = SSL_new(ctx);
     if (!ssl) {
-        fprintf(stderr, "[transport] SSL_new failed:\n");
-        ERR_print_errors_fp(stderr);
+        if (verbose_mode) {
+            fprintf(stderr, "[transport] SSL_new failed:\n");
+            ERR_print_errors_fp(stderr);
+        }
         goto fail_ctx;
     }
 
     if (SSL_set_fd(ssl, t->sockfd) != 1) {
-        fprintf(stderr, "[transport] SSL_set_fd failed:\n");
-        ERR_print_errors_fp(stderr);
+        if (verbose_mode) {
+            fprintf(stderr, "[transport] SSL_set_fd failed:\n");
+            ERR_print_errors_fp(stderr);
+        }
         goto fail_ssl;
     }
 
     if (SSL_set_tlsext_host_name(ssl, host) != 1) {
-        fprintf(stderr, "[transport] SSL_set_tlsext_host_name failed:\n");
-        ERR_print_errors_fp(stderr);
+        if (verbose_mode) {
+            fprintf(stderr, "[transport] SSL_set_tlsext_host_name failed:\n");
+            ERR_print_errors_fp(stderr);
+        }
         goto fail_ssl;
     }
 
     if (SSL_connect(ssl) <= 0) {
-        fprintf(stderr, "[transport] SSL_connect failed for %s:%d:\n", host, port);
-        ERR_print_errors_fp(stderr);
+        if (verbose_mode) {
+            fprintf(stderr, "[transport] SSL_connect failed for %s:%d:\n", host, port);
+            ERR_print_errors_fp(stderr);
+        }
         goto fail_ssl;
     }
 

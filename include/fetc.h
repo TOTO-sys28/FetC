@@ -25,6 +25,7 @@ typedef struct {
     size_t content_length;
     int accept_ranges;
     int chunked;
+    int content_encoding; /* 0=none, 1=gzip, 2=deflate */
     char content_type[64];
     char last_modified[64];
 } DownloadInfo;
@@ -41,6 +42,8 @@ typedef struct {
     /* internal */
     struct timespec _last_progress_time;
     size_t _last_progress_bytes;
+
+    char error_message[512];
 } Downloader;
 
 int download_init(Downloader *dl);
@@ -52,10 +55,13 @@ typedef struct {
     int segments;           /* Number of parallel segments (default: 4) */
     download_progress_cb on_progress;
     void *on_progress_ud;
+
+    char error_message[512];
 } SegmentedDownloader;
 
 int segmented_download_init(SegmentedDownloader *sd);
 int segmented_download_file(SegmentedDownloader *sd, const URL *url);
+void segmented_set_verbose(int verbose);
 
 #ifdef __cplusplus
 }

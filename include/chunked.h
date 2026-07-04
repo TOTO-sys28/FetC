@@ -14,15 +14,17 @@ typedef void (*chunked_progress_cb)(size_t current, size_t total, void *user_dat
  * it independently unit-testable with a mock reader. */
 typedef ssize_t (*chunked_read_fn)(void *ctx, char *buf, size_t len);
 
+typedef ssize_t (*chunked_write_fn)(void *ctx, const char *buf, size_t len);
+
 int chunked_decode_stream_ex(chunked_read_fn read_fn, void *read_ctx,
                              const char *initial, size_t initial_len,
-                             FILE *output, size_t *total_written,
+                             chunked_write_fn write_fn, void *write_ctx, size_t *total_written,
                              chunked_progress_cb cb, void *user_data,
                              size_t offset, size_t total);
 
 /* Convenience wrapper used by production code: reads from a real Transport. */
 int chunked_decode_stream(Transport *t, const char *initial, size_t initial_len,
-                          FILE *output, size_t *total_written,
+                          chunked_write_fn write_fn, void *write_ctx, size_t *total_written,
                           chunked_progress_cb cb, void *user_data,
                           size_t offset, size_t total);
 

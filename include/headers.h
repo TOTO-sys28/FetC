@@ -9,6 +9,7 @@ typedef struct {
     size_t content_length;
     int chunked;
     int connection_close;
+    int content_encoding;
     int accept_ranges;
     size_t range_start;
     size_t range_end;
