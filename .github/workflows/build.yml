@@ -1,0 +1,35 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libssl-dev
+
+    - name: Build project
+      run: make
+
+    - name: Run tests
+      run: make test
+
+    - name: Clean build
+      run: make clean
+
+    - name: Rebuild after clean
+      run: make
+
+    - name: Verify test suite
+      run: make test

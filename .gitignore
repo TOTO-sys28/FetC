@@ -1,0 +1,29 @@
+# Build artifacts
+*.o
+*.a
+bin/
+lib/
+libfetc.pc
+
+# Test binaries (keep .c sources only)
+tests/test_url
+tests/test_headers
+tests/test_request
+tests/test_chunked
+tests/test_resume
+tests/manual_proxy_test
+tests/manual_gzip_test
+
+# Downloaded test files (created by running fetc itself)
+*.zip
+index.html
+get
+10MB*
+100MB*
+1MB*
+
+# Editor/OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
