@@ -39,6 +39,12 @@ static size_t read_temp_file(const char *path, char *buf, size_t buf_size)
     return n;
 }
 
+static ssize_t mock_write(void *ctx, const char *buf, size_t len)
+{
+    FILE *fp = (FILE *)ctx;
+    return fwrite(buf, 1, len, fp);
+}
+
 static void test_chunked_basic(void)
 {
     const char *raw =
@@ -56,7 +62,7 @@ static void test_chunked_basic(void)
 
     size_t written = 0;
     int rc = chunked_decode_stream_ex(mock_read, &reader, NULL, 0,
-                                      fp, &written, NULL, NULL, 0, 0);
+                                      mock_write, fp, &written, NULL, NULL, 0, 0);
     fclose(fp);
 
     assert(rc == 0);
@@ -90,7 +96,7 @@ static void test_chunked_with_initial_buffer(void)
     size_t written = 0;
     int rc = chunked_decode_stream_ex(mock_read, &reader,
                                       initial, strlen(initial),
-                                      fp, &written, NULL, NULL, 0, 0);
+                                      mock_write, fp, &written, NULL, NULL, 0, 0);
     fclose(fp);
 
     assert(rc == 0);
@@ -119,7 +125,7 @@ static void test_chunked_split_reads(void)
 
     size_t written = 0;
     int rc = chunked_decode_stream_ex(mock_read, &reader, NULL, 0,
-                                      fp, &written, NULL, NULL, 0, 0);
+                                      mock_write, fp, &written, NULL, NULL, 0, 0);
     fclose(fp);
 
     assert(rc == 0);
@@ -161,7 +167,7 @@ static void test_chunked_progress_callback(void)
 
     size_t written = 0;
     int rc = chunked_decode_stream_ex(mock_read, &reader, NULL, 0,
-                                      fp, &written, progress_cb, &ctx, 100, 200);
+                                      mock_write, fp, &written, progress_cb, &ctx, 100, 200);
     fclose(fp);
     unlink(out_path);
 
@@ -186,7 +192,7 @@ static void test_chunked_malformed_no_terminator(void)
 
     size_t written = 0;
     int rc = chunked_decode_stream_ex(mock_read, &reader, NULL, 0,
-                                      fp, &written, NULL, NULL, 0, 0);
+                                      mock_write, fp, &written, NULL, NULL, 0, 0);
     fclose(fp);
     unlink(out_path);
 
