@@ -11,7 +11,61 @@
 #include "chunked.h"
 #include "file.h"
 #include "resume.h"
+#include <zlib.h>
 #include "pool.h"
+
+typedef struct {
+    FILE *fp;
+    int use_zlib;
+    z_stream strm;
+    char out_buf[16384];
+    Downloader *dl;
+    int error;
+} WriteContext;
+
+static ssize_t generic_write_fn(void *ctx, const char *buf, size_t len)
+{
+    WriteContext *w = (WriteContext *)ctx;
+    if (w->error) return -1;
+
+    if (!w->use_zlib) {
+        if (fwrite(buf, 1, len, w->fp) != len) {
+            snprintf(w->dl->error_message, sizeof(w->dl->error_message), "File write failed");
+            w->error = 1;
+            return -1;
+        }
+        return len;
+    }
+
+    w->strm.next_in = (Bytef *)buf;
+    w->strm.avail_in = len;
+
+    while (w->strm.avail_in > 0) {
+        w->strm.next_out = (Bytef *)w->out_buf;
+        w->strm.avail_out = sizeof(w->out_buf);
+
+        int ret = inflate(&w->strm, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END && ret != Z_BUF_ERROR) {
+            snprintf(w->dl->error_message, sizeof(w->dl->error_message), "zlib inflate error: %d", ret);
+            w->error = 1;
+            return -1;
+        }
+
+        size_t have = sizeof(w->out_buf) - w->strm.avail_out;
+        if (have > 0) {
+            if (fwrite(w->out_buf, 1, have, w->fp) != have) {
+                snprintf(w->dl->error_message, sizeof(w->dl->error_message), "File write error during decompression");
+                w->error = 1;
+                return -1;
+            }
+        }
+
+        if (ret == Z_STREAM_END)
+            break;
+    }
+
+    return len;
+}
 
 int download_init(Downloader *dl)
 {
@@ -48,12 +102,25 @@ int download_info(const URL *url, DownloadInfo *info)
         return -1;
 
     char req_buf[2048];
-    if (request_build("HEAD", url->host, url->path, 0, req_buf, sizeof(req_buf)) != 0) {
-        return -1;
+    if (t->use_proxy && !use_ssl) {
+        /* HTTP via proxy: use full URL in request */
+        char full_url[1536];
+        snprintf(full_url, sizeof(full_url), "http://%s:%d%s", url->host, url->port, url->path);
+        if (request_build_proxy("HEAD", full_url, 0, req_buf, sizeof(req_buf)) != 0) {
+            pool_release(t, url->host, url->port, use_ssl, 0);
+            return -1;
+        }
+    } else {
+        /* Direct connection or HTTPS via CONNECT tunnel */
+        if (request_build("HEAD", url->host, url->path, 0, req_buf, sizeof(req_buf)) != 0) {
+            pool_release(t, url->host, url->port, use_ssl, 0);
+            return -1;
+        }
     }
 
     size_t req_len = strlen(req_buf);
     if (transport_send(t, req_buf, req_len) != (ssize_t)req_len) {
+        pool_release(t, url->host, url->port, use_ssl, 0);
         return -1;
     }
 
@@ -62,11 +129,13 @@ int download_info(const URL *url, DownloadInfo *info)
     size_t initial_body_len = 0;
 
     if (headers_read(t, header_buf, sizeof(header_buf), &body_ptr, &initial_body_len) != 0) {
+        pool_release(t, url->host, url->port, use_ssl, 0);
         return -1;
     }
 
     HttpHeaders hdr;
     if (headers_parse(header_buf, &hdr) != 0) {
+        pool_release(t, url->host, url->port, use_ssl, 0);
         return -1;
     }
 
@@ -78,11 +147,13 @@ int download_info(const URL *url, DownloadInfo *info)
     info->content_length = hdr.content_length;
     info->accept_ranges = hdr.accept_ranges;
     info->chunked = hdr.chunked;
+    info->content_encoding = hdr.content_encoding;
     strncpy(info->content_type, hdr.content_type, sizeof(info->content_type) - 1);
     info->content_type[sizeof(info->content_type) - 1] = '\0';
     strncpy(info->last_modified, hdr.last_modified, sizeof(info->last_modified) - 1);
     info->last_modified[sizeof(info->last_modified) - 1] = '\0';
 
+    pool_release(t, url->host, url->port, use_ssl, !hdr.connection_close);
     return 0;
 }
 
@@ -128,7 +199,7 @@ int download_file(Downloader *dl, const URL *url)
 static int download_file_internal(Downloader *dl, const URL *url, int redirect_count)
 {
     if (redirect_count > 5) {
-        fprintf(stderr, "Too many redirects\n");
+        snprintf(dl->error_message, sizeof(dl->error_message), "Too many redirects");
         return -1;
     }
 
@@ -166,20 +237,33 @@ static int download_file_internal(Downloader *dl, const URL *url, int redirect_c
 retry: ;
     Transport *t = pool_acquire(url->host, url->port, use_ssl);
     if (!t) {
-        fprintf(stderr, "Connection failed (host=%s port=%d ssl=%d)\n", url->host, url->port, use_ssl);
+        snprintf(dl->error_message, sizeof(dl->error_message), "Connection failed (host=%s port=%d ssl=%d)", url->host, url->port, use_ssl);
         return -1;
     }
 
     size_t range_start = retry_without_range ? 0 : local_size;
 
     char req_buf[2048];
-    if (request_build("GET", url->host, url->path, range_start, req_buf, sizeof(req_buf)) != 0) {
-        return -1;
+    if (t->use_proxy && !use_ssl) {
+        char full_url[1536];
+        snprintf(full_url, sizeof(full_url), "http://%s:%d%s", url->host, url->port, url->path);
+        if (request_build_proxy("GET", full_url, range_start, req_buf, sizeof(req_buf)) != 0) {
+            pool_release(t, url->host, url->port, use_ssl, 0);
+            snprintf(dl->error_message, sizeof(dl->error_message), "Failed to build proxy request");
+            return -1;
+        }
+    } else {
+        if (request_build("GET", url->host, url->path, range_start, req_buf, sizeof(req_buf)) != 0) {
+            pool_release(t, url->host, url->port, use_ssl, 0);
+            snprintf(dl->error_message, sizeof(dl->error_message), "Failed to build request");
+            return -1;
+        }
     }
 
     size_t req_len = strlen(req_buf);
     if (transport_send(t, req_buf, req_len) != (ssize_t)req_len) {
-        fprintf(stderr, "Send failed\n");
+        snprintf(dl->error_message, sizeof(dl->error_message), "Send request failed");
+        pool_release(t, url->host, url->port, use_ssl, 0);
         return -1;
     }
 
@@ -188,23 +272,26 @@ retry: ;
     size_t initial_body_len = 0;
 
     if (headers_read(t, header_buf, sizeof(header_buf), &body_ptr, &initial_body_len) != 0) {
-        fprintf(stderr, "Headers read failed\n");
+        snprintf(dl->error_message, sizeof(dl->error_message), "Failed to read response headers");
+        pool_release(t, url->host, url->port, use_ssl, 0);
         return -1;
     }
 
     HttpHeaders hdr;
     if (headers_parse(header_buf, &hdr) != 0) {
-        fprintf(stderr, "Headers parse failed\n");
+        snprintf(dl->error_message, sizeof(dl->error_message), "Failed to parse response headers");
+        pool_release(t, url->host, url->port, use_ssl, 0);
         return -1;
     }
 
     if (is_redirect(hdr.status_code)) {
         /* Body (if any) isn't drained here, so the connection can't be
          * safely reused; always close it. */
+        pool_release(t, url->host, url->port, use_ssl, 0);
 
         char location[1024];
         if (parse_location(header_buf, location, sizeof(location)) != 0) {
-            fprintf(stderr, "Redirect without Location header\n");
+            snprintf(dl->error_message, sizeof(dl->error_message), "Redirect without Location header");
             return -1;
         }
 
@@ -215,7 +302,7 @@ retry: ;
                 strncpy(new_url.path, location, sizeof(new_url.path) - 1);
                 new_url.path[sizeof(new_url.path) - 1] = '\0';
             } else {
-                fprintf(stderr, "Invalid redirect URL: %s\n", location);
+                snprintf(dl->error_message, sizeof(dl->error_message), "Invalid redirect URL: %s", location);
                 return -1;
             }
         }
@@ -225,8 +312,9 @@ retry: ;
     }
 
     if (hdr.status_code == 416) {
+        pool_release(t, url->host, url->port, use_ssl, 0);
         if (local_size > 0) {
-            fprintf(stderr, "Range not satisfiable, restarting from zero\n");
+            printf("Range not satisfiable, restarting from zero\n");
             unlink(filename);
             local_size = 0;
             retry_without_range = 1;
@@ -236,7 +324,8 @@ retry: ;
     }
 
     if (hdr.status_code != 200 && hdr.status_code != 206) {
-        fprintf(stderr, "Unexpected status code: %d\n", hdr.status_code);
+        snprintf(dl->error_message, sizeof(dl->error_message), "Unexpected HTTP status code: %d", hdr.status_code);
+        pool_release(t, url->host, url->port, use_ssl, 0);
         return -1;
     }
 
@@ -250,7 +339,28 @@ retry: ;
     const char *mode = (range_start > 0 && hdr.status_code == 206) ? "ab" : "wb";
     FILE *fp = fopen(filename, mode);
     if (!fp) {
+        snprintf(dl->error_message, sizeof(dl->error_message), "Failed to open output file: %s", filename);
+        pool_release(t, url->host, url->port, use_ssl, 0);
         return -1;
+    }
+
+    WriteContext wctx;
+    memset(&wctx, 0, sizeof(wctx));
+    wctx.fp = fp;
+    wctx.dl = dl;
+
+    if (hdr.content_encoding == 1 || hdr.content_encoding == 2) {
+        wctx.use_zlib = 1;
+        wctx.strm.zalloc = Z_NULL;
+        wctx.strm.zfree = Z_NULL;
+        wctx.strm.opaque = Z_NULL;
+        /* 32 + MAX_WBITS enables automatic header detection for gzip or zlib */
+        if (inflateInit2(&wctx.strm, 32 + 15) != Z_OK) {
+            snprintf(dl->error_message, sizeof(dl->error_message), "Failed to initialize zlib");
+            fclose(fp);
+            pool_release(t, url->host, url->port, use_ssl, 0);
+            return -1;
+        }
     }
 
     size_t written = range_start;
@@ -259,11 +369,12 @@ retry: ;
     if (hdr.chunked) {
         size_t chunk_written = 0;
         if (chunked_decode_stream(t, body_ptr, initial_body_len,
-                                  fp, &chunk_written,
+                                  generic_write_fn, &wctx, &chunk_written,
                                   dl->on_progress, dl->on_progress_ud,
                                   range_start, total_size) != 0) {
-            fclose(fp);
-            return -1;
+            if (!dl->error_message[0])
+                snprintf(dl->error_message, sizeof(dl->error_message), "Chunked decode failed");
+            goto fail;
         }
         written += chunk_written;
         reusable = !hdr.connection_close;
@@ -273,7 +384,7 @@ retry: ;
             to_write = hdr.content_length;
 
         if (to_write > 0) {
-            if (file_write_chunk(fp, body_ptr, to_write) != 0)
+            if (generic_write_fn(&wctx, body_ptr, to_write) != (ssize_t)to_write)
                 goto fail;
             written += to_write;
             report_progress(dl, written, total_size);
@@ -286,7 +397,7 @@ retry: ;
             ssize_t n = transport_recv(t, buf, to_read);
             if (n <= 0)
                 goto fail;
-            if (file_write_chunk(fp, buf, n) != 0)
+            if (generic_write_fn(&wctx, buf, n) != (ssize_t)n)
                 goto fail;
             written += n;
             remaining -= n;
@@ -298,7 +409,7 @@ retry: ;
          * chunked): the only way to know we've reached the end is the
          * peer closing the connection, so it can never be reused. */
         if (initial_body_len > 0) {
-            if (file_write_chunk(fp, body_ptr, initial_body_len) != 0)
+            if (generic_write_fn(&wctx, body_ptr, initial_body_len) != (ssize_t)initial_body_len)
                 goto fail;
             written += initial_body_len;
             report_progress(dl, written, total_size);
@@ -311,7 +422,7 @@ retry: ;
                 goto fail;
             if (n == 0)
                 break;
-            if (file_write_chunk(fp, buf, n) != 0)
+            if (generic_write_fn(&wctx, buf, n) != (ssize_t)n)
                 goto fail;
             written += n;
             report_progress(dl, written, total_size);
@@ -319,11 +430,19 @@ retry: ;
         reusable = 0;
     }
 
+    if (wctx.use_zlib)
+        inflateEnd(&wctx.strm);
     fclose(fp);
+    pool_release(t, url->host, url->port, use_ssl, reusable);
     return 0;
 
 fail:
+    if (wctx.use_zlib)
+        inflateEnd(&wctx.strm);
+    if (!dl->error_message[0])
+        snprintf(dl->error_message, sizeof(dl->error_message), "Network or file I/O error during download");
     fclose(fp);
+    pool_release(t, url->host, url->port, use_ssl, 0);
     return -1;
 }
 

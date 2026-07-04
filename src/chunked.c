@@ -72,7 +72,7 @@ static size_t parse_hex(const char *s)
 
 int chunked_decode_stream_ex(chunked_read_fn read_fn, void *read_ctx,
                              const char *initial, size_t initial_len,
-                             FILE *output, size_t *total_written,
+                             chunked_write_fn write_fn, void *write_ctx, size_t *total_written,
                              chunked_progress_cb cb, void *user_data,
                              size_t offset, size_t total)
 {
@@ -95,7 +95,7 @@ int chunked_decode_stream_ex(chunked_read_fn read_fn, void *read_ctx,
             ssize_t n = stream_read(&s, buf, to_read);
             if (n <= 0)
                 return -1;
-            if (fwrite(buf, 1, n, output) != (size_t)n)
+            if (write_fn(write_ctx, buf, n) != n)
                 return -1;
             written += n;
             remaining -= n;
@@ -128,12 +128,12 @@ static ssize_t transport_read_adapter(void *ctx, char *buf, size_t len)
 }
 
 int chunked_decode_stream(Transport *t, const char *initial, size_t initial_len,
-                          FILE *output, size_t *total_written,
+                          chunked_write_fn write_fn, void *write_ctx, size_t *total_written,
                           chunked_progress_cb cb, void *user_data,
                           size_t offset, size_t total)
 {
     return chunked_decode_stream_ex(transport_read_adapter, t,
                                     initial, initial_len,
-                                    output, total_written,
+                                    write_fn, write_ctx, total_written,
                                     cb, user_data, offset, total);
 }

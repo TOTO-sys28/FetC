@@ -67,6 +67,17 @@ int headers_parse(const char *headers_text, HttpHeaders *out)
     if (strstr(headers_text, "Transfer-Encoding: chunked"))
         out->chunked = 1;
 
+    const char *ce = strstr(headers_text, "Content-Encoding:");
+    if (ce) {
+        ce += 17;
+        while (*ce == ' ' || *ce == '\t')
+            ce++;
+        if (strncasecmp(ce, "gzip", 4) == 0)
+            out->content_encoding = 1;
+        else if (strncasecmp(ce, "deflate", 7) == 0)
+            out->content_encoding = 2;
+    }
+
     const char *conn = strstr(headers_text, "Connection:");
     if (conn) {
         conn += 11;
